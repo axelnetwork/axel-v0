@@ -1,0 +1,26 @@
+[Unit]
+Description=AXEL_Utility_Token's distributed currency daemon
+After=network.target
+
+[Service]
+User=axel_utility_token
+Group=axel_utility_token
+
+Type=forking
+PIDFile=/var/lib/axel_utility_tokend/axel_utility_tokend.pid
+
+ExecStart=/usr/bin/axel_utility_tokend -daemon -pid=/var/lib/axel_utility_tokend/axel_utility_tokend.pid \
+          -conf=/etc/axel_utility_token/axel_utility_token.conf -datadir=/var/lib/axel_utility_tokend
+
+ExecStop=-/usr/bin/axel_utility_token-cli -conf=/etc/axel_utility_token/axel_utility_token.conf \
+         -datadir=/var/lib/axel_utility_tokend stop
+
+Restart=always
+PrivateTmp=true
+TimeoutStopSec=60s
+TimeoutStartSec=2s
+StartLimitInterval=120s
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

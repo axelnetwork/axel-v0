@@ -1,0 +1,11 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=AXEL_Utility_Token
+Comment=AXEL_Utility_Token P2P Cryptocurrency
+Exec=axel_utility_token-qt %u
+Terminal=false
+Type=Application
+Icon=axel_utility_token128
+MimeType=x-scheme-handler/axel_utility_token;
+Categories=Office;Finance;
+Name[ru]=axel_utility_token-qt.desktop.desktop

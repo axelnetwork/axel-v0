@@ -1,0 +1,11 @@
+[Protocol]
+exec=axel_utility_token-qt '%u'
+protocol=axel_utility_token
+input=none
+output=none
+helper=true
+listing=
+reading=false
+writing=false
+makedir=false
+deleting=false
