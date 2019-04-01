@@ -60,6 +60,9 @@ set<pair<COutPoint, unsigned int> > setStakeSeen;
 // active chain, or the staking input was spent in the past 100 blocks after the height
 // of the incoming block.
 map<unsigned int, unsigned int> mapHashedBlocks;
+map<COutPoint, int> mapStakeSpent;
+std::map<uint256, CAmount> mnTierMap;
+int64_t mnTierCacheTime = GetTime();
 CChain chainActive;
 CBlockIndex* pindexBestHeader = NULL;
 int64_t nTimeBestReceived = 0;
@@ -2087,7 +2090,8 @@ bool DisconnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex
                 if (coins->vout.size() < out.n + 1)
                     coins->vout.resize(out.n + 1);
                 coins->vout[out.n] = undo.txout;
-
+                // erase the spent input
+                mapStakeSpent.erase(out);
             }
         }
     }
@@ -2310,6 +2314,25 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         if (!pblocktree->WriteTxIndex(vPos))
             return state.Abort("Failed to write transaction index");
 
+    // add new entries
+    for (const CTransaction tx: block.vtx) {
+        if (tx.IsCoinBase())
+            continue;
+        for (const CTxIn in: tx.vin) {
+            // LogPrint("map", "mapStakeSpent: Insert %s | %u\n", in.prevout.ToString(), pindex->nHeight);
+            mapStakeSpent.insert(std::make_pair(in.prevout, pindex->nHeight));
+        }
+    }
+    // delete old entries
+    for (auto it = mapStakeSpent.begin(); it != mapStakeSpent.end();) {
+        if (it->second < pindex->nHeight - Params().MaxReorganizationDepth()) {
+            // LogPrint("map", "mapStakeSpent: Erase %s | %u\n", it->first.ToString(), it->second);
+            it = mapStakeSpent.erase(it);
+        }
+        else {
+            it++;
+        }
+    }
 
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());
@@ -3188,6 +3211,79 @@ bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bo
                 return state.DoS(100, error("CheckBlock() : more than one coinstake"));
     }
 
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    if (!IsInitialBlockDownload() &&
+        masternodeSync.IsSynced()) {
+
+	// flush cache periodically
+	if ((GetTime() - mnTierCacheTime) > 10800) {
+		mnTierMap.clear();
+		mnTierCacheTime = GetTime();
+		LogPrintf("* Flushed mnTier cache\n");
+	}
+
+        int blockHeight = chainActive.Height();
+        int payees = block.vtx[1].vout.size() - 2;
+
+	if (payees >= 3)
+        {
+                for (int c = 2; c < 5; c++) {
+
+			// extract collat info from mn
+			CMasternode* pmn = mnodeman.Find(block.vtx[1].vout[c].scriptPubKey);
+			if (!pmn) {
+				LogPrintf("* Masternode with this vin not found\n");
+				return state.DoS(100, error("CheckBlock() : no match in masternode list for vin"), REJECT_INVALID, "unknown-mn");
+			}
+
+			// if we know this mn, we know the tier amount
+			CAmount nCollateralAmount = 0;
+			uint256 nCollateralHash = pmn->vin.prevout.hash;
+			int nCollateralN = pmn->vin.prevout.n;
+
+			if (mnTierMap.count(nCollateralHash) > 0) {
+			   for (auto it = mnTierMap.find(nCollateralHash); it != mnTierMap.end(); it++) {
+				if (it->first == nCollateralHash)
+					nCollateralAmount = it->second;
+			   }
+			   LogPrintf("* Found cached entry in local map\n");
+			}
+
+			// if it wasnt in our map/cache
+			if (nCollateralAmount == 0) {
+
+				LogPrintf("* Retrieving collateral transaction from disk\n");
+
+				uint256 blockHash;
+				CTransaction nCollateralTx;
+				if (!GetTransaction(nCollateralHash, nCollateralTx, blockHash, true))
+				    return state.DoS(100, error("CheckBlock() : could not find collateral transaction for masternode"), REJECT_INVALID, "unknown-mn");
+				CAmount potential = nCollateralTx.vout[nCollateralN].nValue;
+				if (potential == 1000 * COIN || potential == 2000 * COIN || potential == 5000 * COIN) {
+				    nCollateralAmount = potential;
+				    mnTierMap.insert(std::pair<uint256, CAmount>(nCollateralHash, nCollateralAmount));
+				    LogPrintf("* Added (%s,%llu) to mnTierMap\n", nCollateralHash.ToString().c_str(), nCollateralAmount);
+				}
+			}
+
+			// match mn/tier to a known reward
+			int nTier = 0;
+			if (nCollateralAmount == 1000000 * COIN) nTier = 1;
+			if (nCollateralAmount == 50000 * COIN) nTier = 2;
+			if (nCollateralAmount == 5000 * COIN) nTier = 3;
+
+			CAmount nBlockValue = GetBlockValue(blockHeight);
+			CAmount nTierReward = GetMasternodePayment(blockHeight, (c-1), nBlockValue);
+			if (nTierReward == block.vtx[1].vout[c].nValue && (nTier == c - 1)) {
+				LogPrintf("* Tier %d matched to correct Masternode\n", (c-1));
+			} else {
+				LogPrintf("* Tier %d matched to invalid Masternode\n", (c-1));
+				return state.DoS(100, error("CheckBlock() : masternode doesnt belong to this payment tier"), REJECT_INVALID, "fraudulent-mn");
+			}
+		}
+        }
+    }
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     // ----------- swiftTX transaction scanning -----------
     if (IsSporkActive(SPORK_2_SWIFTTX_BLOCK_FILTERING)) {
@@ -3659,25 +3755,36 @@ bool ProcessNewBlock(CValidationState& state, CNode* pfrom, CBlock* pblock, CDis
             return error("%s : CheckBlock FAILED for block %s", __func__, pblock->GetHash().GetHex());
         }
 
-        if (pfrom && GetBoolArg("-blockspamfilter", DEFAULT_BLOCK_SPAM_FILTER)) {
+        if (pblock->IsProofOfStake()) {
+            //LogPrintf("%s : check stake inputs\n", __func__);
+            CCoinsViewCache coins(pcoinsTip);
+            // check stake inputs in current coinsView and reject block if inputs are not allowed
+            if (!coins.HaveInputs(pblock->vtx[1])) {
+                std::pair<COutPoint, unsigned int> ProofOfStake = pblock->GetProofOfStake();
 
-          if (chainActive.Height() > DEFAULT_BLOCK_SPAM_START && IsSporkActive(SPORK_8_BLOCK_PATCH_ENFORCEMENT)) {
-                    CNodeState *nodestate = State(pfrom->GetId());
-                    BlockMap::iterator mi = mapBlockIndex.find(pblock->hashPrevBlock);
-                    // we already checked this isn't the end
-                    nodestate->nodeBlocks.onBlockReceived(mi->second->nHeight);
-                    bool nodeStatus = true;
-                    // UpdateState will return false if the node is attacking us or update the score and return true.
-                    nodeStatus = nodestate->nodeBlocks.updateState(state, nodeStatus);
-                    int nDoS = 0;
-                    if (state.IsInvalid(nDoS)) {
-                        if (nDoS > 0)
-                            Misbehaving(pfrom->GetId(), nDoS);
-                        nodeStatus = false;
-                    }
-                    if(!nodeStatus)
-                        return error("%s : AcceptBlock FAILED - block spam protection", __func__);
-                }
+                // the inputs are spent at the chain tip so we should look at the recently spent outputs
+                auto it = mapStakeSpent.find(ProofOfStake.first/*pblock->vtx[1].vin[0].prevout*/);
+                if (it == mapStakeSpent.end())
+                    return state.DoS(100, error("%s : stake input missing/spent", __func__));
+
+                // Check for coin age.
+                    // First try finding the previous transaction in database.
+                    CTransaction txPrev;
+                    uint256 hashBlockPrev;
+                    if (!GetTransaction(ProofOfStake.first.hash/*pblock->vtx[1].vin[0].prevout.hash*/, txPrev, hashBlockPrev, true))
+                          return state.DoS(100, error("%s : stake failed to find vin transaction", __func__));
+                    // Find block in map.
+                    CBlockIndex* pindex = NULL;
+                    BlockMap::iterator itBlock = mapBlockIndex.find(hashBlockPrev);
+                    if (itBlock != mapBlockIndex.end())
+                          pindex = itBlock->second;
+                    else
+                          return state.DoS(100, error("%s : stake failed to find block index", __func__));
+                    // Check block time vs stake age requirement.
+                    if (pindex->GetBlockHeader().nTime + nStakeMinAge > ProofOfStake.second/*pblock->GetBlockHeader().nTime*/)
+                          return state.DoS(100, error("%s : stake under min. stake age", __func__));
+
+            }
         }
 
         // Store to disk
@@ -3687,8 +3794,25 @@ bool ProcessNewBlock(CValidationState& state, CNode* pfrom, CBlock* pblock, CDis
             mapBlockSource[pindex->GetBlockHash()] = pfrom->GetId();
         }
         CheckBlockIndex();
-        if (!ret)
+        if (!ret){
+            // Check spamming
+            if(pfrom && GetBoolArg("-blockspamfilter", DEFAULT_BLOCK_SPAM_FILTER)) {
+                CNodeState *nodestate = State(pfrom->GetId());
+                nodestate->nodeBlocks.onBlockReceived(pindex->nHeight);
+                bool nodeStatus = true;
+                // UpdateState will return false if the node is attacking us or update the score and return true.
+                nodeStatus = nodestate->nodeBlocks.updateState(state, nodeStatus);
+                int nDoS = 0;
+                if (state.IsInvalid(nDoS)) {
+                    if (nDoS > 0)
+                        Misbehaving(pfrom->GetId(), nDoS);
+                    nodeStatus = false;
+                }
+                if(!nodeStatus)
+                    return error("%s : AcceptBlock FAILED - block spam protection", __func__);
+            }
             return error("%s : AcceptBlock FAILED", __func__);
+        }
     }
 
     if (!ActivateBestChain(state, pblock, checked))
