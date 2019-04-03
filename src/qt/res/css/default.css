@@ -481,7 +481,7 @@
     }
 
     /* Global LineEdit style */
-    .QValidatedLineEdit, .QLineEdit { /* Text Entry Fields */
+    .QValidatedLineEdit, .QLineEdit, .QTextBrowser { /* Text Entry Fields */
 
     border: 1px solid #000000;
     font-size:11px;
