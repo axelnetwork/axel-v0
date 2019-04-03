@@ -3259,7 +3259,7 @@ bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bo
 				if (!GetTransaction(nCollateralHash, nCollateralTx, blockHash, true))
 				    return state.DoS(100, error("CheckBlock() : could not find collateral transaction for masternode"), REJECT_INVALID, "unknown-mn");
 				CAmount potential = nCollateralTx.vout[nCollateralN].nValue;
-				if (potential == 1000 * COIN || potential == 2000 * COIN || potential == 5000 * COIN) {
+				if (potential == 1000000 * COIN || potential == 50000 * COIN || potential == 5000 * COIN) {
 				    nCollateralAmount = potential;
 				    mnTierMap.insert(std::pair<uint256, CAmount>(nCollateralHash, nCollateralAmount));
 				    LogPrintf("* Added (%s,%llu) to mnTierMap\n", nCollateralHash.ToString().c_str(), nCollateralAmount);

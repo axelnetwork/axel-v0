@@ -115,7 +115,7 @@ bool CheckProofOfWork(uint256 hash, unsigned int nBits)
     bool fOverflow;
     uint256 bnTarget;
 
-    if (Params().SkipProofOfWorkCheck())
+    if (Params().SkipProofOfWorkCheck() || Params().NetworkID() == CBaseChainParams::TESTNET)
         return true;
 
     bnTarget.SetCompact(nBits, &fNegative, &fOverflow);
