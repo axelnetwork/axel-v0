@@ -3211,80 +3211,6 @@ bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bo
                 return state.DoS(100, error("CheckBlock() : more than one coinstake"));
     }
 
-    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    if (!IsInitialBlockDownload() &&
-        masternodeSync.IsSynced()) {
-
-	// flush cache periodically
-	if ((GetTime() - mnTierCacheTime) > 10800) {
-		mnTierMap.clear();
-		mnTierCacheTime = GetTime();
-		LogPrintf("* Flushed mnTier cache\n");
-	}
-
-        int blockHeight = chainActive.Height();
-        int payees = block.vtx[1].vout.size() - 2;
-
-	if (payees >= 3)
-        {
-                for (int c = 2; c < 5; c++) {
-
-			// extract collat info from mn
-			CMasternode* pmn = mnodeman.Find(block.vtx[1].vout[c].scriptPubKey);
-			if (!pmn) {
-				LogPrintf("* Masternode with this vin not found\n");
-				return state.DoS(100, error("CheckBlock() : no match in masternode list for vin"), REJECT_INVALID, "unknown-mn");
-			}
-
-			// if we know this mn, we know the tier amount
-			CAmount nCollateralAmount = 0;
-			uint256 nCollateralHash = pmn->vin.prevout.hash;
-			int nCollateralN = pmn->vin.prevout.n;
-
-			if (mnTierMap.count(nCollateralHash) > 0) {
-			   for (auto it = mnTierMap.find(nCollateralHash); it != mnTierMap.end(); it++) {
-				if (it->first == nCollateralHash)
-					nCollateralAmount = it->second;
-			   }
-			   LogPrintf("* Found cached entry in local map\n");
-			}
-
-			// if it wasnt in our map/cache
-			if (nCollateralAmount == 0) {
-
-				LogPrintf("* Retrieving collateral transaction from disk\n");
-
-				uint256 blockHash;
-				CTransaction nCollateralTx;
-				if (!GetTransaction(nCollateralHash, nCollateralTx, blockHash, true))
-				    return state.DoS(100, error("CheckBlock() : could not find collateral transaction for masternode"), REJECT_INVALID, "unknown-mn");
-				CAmount potential = nCollateralTx.vout[nCollateralN].nValue;
-				if (potential == 1000000 * COIN || potential == 50000 * COIN || potential == 5000 * COIN) {
-				    nCollateralAmount = potential;
-				    mnTierMap.insert(std::pair<uint256, CAmount>(nCollateralHash, nCollateralAmount));
-				    LogPrintf("* Added (%s,%llu) to mnTierMap\n", nCollateralHash.ToString().c_str(), nCollateralAmount);
-				}
-			}
-
-			// match mn/tier to a known reward
-			int nTier = 0;
-			if (nCollateralAmount == 1000000 * COIN) nTier = 1;
-			if (nCollateralAmount == 50000 * COIN) nTier = 2;
-			if (nCollateralAmount == 5000 * COIN) nTier = 3;
-
-			CAmount nBlockValue = GetBlockValue(blockHeight);
-			CAmount nTierReward = GetMasternodePayment(blockHeight, (c-1), nBlockValue);
-			if (nTierReward == block.vtx[1].vout[c].nValue && (nTier == c - 1)) {
-				LogPrintf("* Tier %d matched to correct Masternode\n", (c-1));
-			} else {
-				LogPrintf("* Tier %d matched to invalid Masternode\n", (c-1));
-				return state.DoS(100, error("CheckBlock() : masternode doesnt belong to this payment tier"), REJECT_INVALID, "fraudulent-mn");
-			}
-		}
-        }
-    }
-    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
     // ----------- swiftTX transaction scanning -----------
     if (IsSporkActive(SPORK_2_SWIFTTX_BLOCK_FILTERING)) {
         BOOST_FOREACH (const CTransaction& tx, block.vtx) {
@@ -3796,20 +3722,22 @@ bool ProcessNewBlock(CValidationState& state, CNode* pfrom, CBlock* pblock, CDis
         CheckBlockIndex();
         if (!ret){
             // Check spamming
-            if(pfrom && GetBoolArg("-blockspamfilter", DEFAULT_BLOCK_SPAM_FILTER)) {
+            if(pindex && pfrom && GetBoolArg("-blockspamfilter", DEFAULT_BLOCK_SPAM_FILTER)) {
                 CNodeState *nodestate = State(pfrom->GetId());
-                nodestate->nodeBlocks.onBlockReceived(pindex->nHeight);
-                bool nodeStatus = true;
-                // UpdateState will return false if the node is attacking us or update the score and return true.
-                nodeStatus = nodestate->nodeBlocks.updateState(state, nodeStatus);
-                int nDoS = 0;
-                if (state.IsInvalid(nDoS)) {
-                    if (nDoS > 0)
-                        Misbehaving(pfrom->GetId(), nDoS);
-                    nodeStatus = false;
-                }
-                if(!nodeStatus)
-                    return error("%s : AcceptBlock FAILED - block spam protection", __func__);
+				if(nodestate != NULL){
+					nodestate->nodeBlocks.onBlockReceived(pindex->nHeight);
+					bool nodeStatus = true;
+					// UpdateState will return false if the node is attacking us or update the score and return true.
+					nodeStatus = nodestate->nodeBlocks.updateState(state, nodeStatus);
+					int nDoS = 0;
+					if (state.IsInvalid(nDoS)) {
+						if (nDoS > 0)
+							Misbehaving(pfrom->GetId(), nDoS);
+						nodeStatus = false;
+					}
+					if(!nodeStatus)
+						return error("%s : AcceptBlock FAILED - block spam protection", __func__);
+				}
             }
             return error("%s : AcceptBlock FAILED", __func__);
         }
@@ -4930,7 +4858,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             pfrom->nStartingHeight, addrMe.ToString(), pfrom->id,
             remoteAddr);
 
-        AddTimeData(pfrom->addr, nTime);
+		AddTimeData(pfrom->addr, nTime);
     }
 
 
