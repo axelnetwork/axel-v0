@@ -21,6 +21,7 @@ TransactionDescDialog::TransactionDescDialog(const QModelIndex& idx, QWidget* pa
     this->setStyleSheet(GUIUtil::loadStyleSheet());
 
     QString desc = idx.data(TransactionTableModel::LongDescriptionRole).toString();
+    ui->detailText->setOpenExternalLinks(true);
     ui->detailText->setHtml(desc);
 }
 
